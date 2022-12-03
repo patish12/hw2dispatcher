@@ -40,11 +40,12 @@ void parse_arguments(char *argv[], char* cmdfile, int* num_threads, int* num_cou
 
 void init_ctr_files(int num_counters)
 {
-    char filename[256];
+    //name is of format "counterxx.txt" 11 characters
+    char filename[12]; 
     FILE *f;
     for (long long i =0; i<num_counters; i++)
     {
-        sprintf(filename, "counter%lld", i);
+        sprintf(filename, "counter%lld.txt", i);
         f = fopen(filename, "w");
         if(NULL!=f)
         {
@@ -83,8 +84,42 @@ void *init_threads_routine(void *data)
                     printf("THREAD: %d is SLEEPING!\n", td->number);
                     sleep(sleeptime / 1000);
                 }
+                td->is_running = false;
             }
-            td->is_running = false;
+            else if (strncmp(td->cmd, "increment ", 10)==0)
+            {
+                long long file_id;
+                char val[0];
+                if (1 == sscanf(td->cmd+10, "%lld", &file_id))
+                {
+                    FILE *f;
+                    char filename[12];
+                    sprintf(filename, "counter%lld.txt", file_id);
+                    printf("THREAD: %d is INCREMENTING file %s!\n", td->number, filename);
+                    f = fopen(filename, "rt");
+                    if(NULL!=f)
+                    {
+                        val[0] = fgetc(f) + 1;
+                        fclose(f);
+                    }
+                    else
+                    {
+                        printf("ERROR: unable to open file %s for writring\n", filename);
+                        exit(1);
+                    }
+                    f = fopen(filename, "wt");
+                    if(NULL!=f)
+                    {
+                        fputs(val, f);
+                        fclose(f);
+                    }
+                    else
+                    {
+                        printf("ERROR: unable to open file %s for writring\n", filename);
+                        exit(1);
+                    }
+                }
+            }
         }
     }
 }
@@ -133,7 +168,7 @@ void execute_cmd(thread_data* td, char *cmd, int numt)
 int main(int argc, char* argv[])
 {
     int num_threads, num_counters, log_enabled;
-    char* cmdfile, cmd[256];
+    char* cmdfile, cmd[MAX_LINE_WIDTH];
     pthread_t* thread_pool;
     thread_data *tdata;
 
@@ -159,7 +194,7 @@ int main(int argc, char* argv[])
     {
         while(!feof(f))
         {
-            fgets(cmd, 256, f);
+            fgets(cmd, MAX_LINE_WIDTH, f);
             printf("MAIN: %s\n", cmd);
             execute_cmd(tdata, cmd, num_threads);
         }
