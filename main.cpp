@@ -10,6 +10,7 @@ typedef struct _thread_data
     int number;
     int is_running;
     char cmd[256];
+    int log_enabled;
 } thread_data;
 
 void parse_arguments(char *argv[], char* cmdfile, int* num_threads, int* num_counters, int* log_enabled)
@@ -35,7 +36,6 @@ void parse_arguments(char *argv[], char* cmdfile, int* num_threads, int* num_cou
         printf("ERROR: Unable to read log enabled\n");
         exit(1);
     }
-
 }
 
 void init_ctr_files(int num_counters)
@@ -64,6 +64,23 @@ void *init_threads_routine(void *data)
 {
     thread_data* td = (thread_data*)data;
     printf("I'm here! Thread id %d\n", td->number);
+    char thread_file[13];
+    sprintf(thread_file, "thread%lld.txt", td->number);
+
+    //if log enabled init thread log files
+    if (td->log_enabled)
+    {
+        FILE *f;
+        f = fopen(thread_file, "r");
+        if(NULL!=f)
+            fclose(f);
+        else
+            {
+                printf("ERROR: unable to open file %s for reading\n", thread_file);
+                exit(1);
+            }
+    }
+
     for(;;)
     {
         if(strlen(td->cmd)==0)
@@ -104,7 +121,7 @@ void *init_threads_routine(void *data)
                     }
                     else
                     {
-                        printf("ERROR: unable to open file %s for writring\n", filename);
+                        printf("ERROR: unable to open file %s for reading\n", filename);
                         exit(1);
                     }
                     f = fopen(filename, "wt");
@@ -118,13 +135,50 @@ void *init_threads_routine(void *data)
                         printf("ERROR: unable to open file %s for writring\n", filename);
                         exit(1);
                     }
+                    td->is_running = false;
+                }
+            }
+
+            else if (strncmp(td->cmd, "decrement ", 10)==0)
+            {
+                long long file_id;
+                char val[0];
+                if (1 == sscanf(td->cmd+10, "%lld", &file_id))
+                {
+                    FILE *f;
+                    char filename[12];
+                    sprintf(filename, "counter%lld.txt", file_id);
+                    printf("THREAD: %d is DECREMENTING file %s!\n", td->number, filename);
+                    f = fopen(filename, "rt");
+                    if(NULL!=f)
+                    {
+                        val[0] = fgetc(f) - 1;
+                        fclose(f);
+                    }
+                    else
+                    {
+                        printf("ERROR: unable to open file %s for reading\n", filename);
+                        exit(1);
+                    }
+                    f = fopen(filename, "wt");
+                    if(NULL!=f)
+                    {
+                        fputs(val, f);
+                        fclose(f);
+                    }
+                    else
+                    {
+                        printf("ERROR: unable to open file %s for writring\n", filename);
+                        exit(1);
+                    }
+                    td->is_running = false;
                 }
             }
         }
     }
 }
 
-void init_threads(pthread_t* pool, thread_data *td, int num_threads)
+void init_threads(pthread_t* pool, thread_data *td, int num_threads, int log_enabled)
 {
     int status, i;
 
@@ -133,6 +187,7 @@ void init_threads(pthread_t* pool, thread_data *td, int num_threads)
         strcpy(td[i].cmd, "");
         td[i].is_running = false;
         td[i].number = i;
+        td[i].log_enabled = log_enabled;
         status = pthread_create(pool + i, NULL, init_threads_routine, (void *)(&td[i]));
         if(status !=0)
         {
@@ -152,17 +207,65 @@ int thread_available(thread_data*td, int numt)
     return -1;
 }
 
+void execute_dispatch_cmd(thread_data* td, int numt, char *cmd)
+{
+    int sleeptime;
+    if (strncmp(cmd, "msleep ",7 ) == 0)
+    {
+        if (1==sscanf(cmd + 7, "%d", &sleeptime))
+        {
+            printf("DISPATCHER is SLEEPING!\n");
+            sleep(sleeptime / 1000);
+        }
+    }
+
+    else if (strncmp(cmd, "wait",4 ) == 0)
+    {
+        //0 = wait, 1 = dont wait
+        int wait_or_not = 0;
+        while (!wait_or_not)
+        //while you need to wait
+        {
+            //initialize variable to 1
+            wait_or_not = 1;
+            for (int i = 0; i<numt; i++)
+            {
+                //if all threads arent running wait variable will stay 1
+                //if atleast 1 is running it'll multiply by 0 and stay in while loop
+                wait_or_not *=  !(td[i].is_running);
+            }
+        }
+    }
+
+    else
+        printf("EXEC: invalid DISPATCH command\n");
+}
+
 void execute_cmd(thread_data* td, char *cmd, int numt)
 {
-    int avail_thread = -1;
-    while(avail_thread == -1)
+    if (strncmp(cmd, "worker ", 7)!=0)
+        if (strncmp(cmd, "dispatcher_", 11))
+            //pass the command without the dispatcher_ prefix which is 11 characters
+            execute_dispatch_cmd(td, numt, cmd+11); 
+        else
+        {
+            printf("EXEC: invalid command\n");
+            return;
+        }
+            
+    else
     {
-        avail_thread = thread_available(td, numt);
-        printf("EXEC: no threads available\n");
-        sleep(1);
+        int avail_thread = -1;
+        while(avail_thread == -1)
+        {
+            avail_thread = thread_available(td, numt);
+            printf("EXEC: no threads available\n");
+            sleep(1);
+        }
+        printf("EXEC: available thread %d\n", avail_thread);
+        strcpy(td[avail_thread].cmd, cmd);
     }
-    printf("EXEC: available thread %d\n", avail_thread);
-    strcpy(td[avail_thread].cmd, cmd);
+    
 }
 
 int main(int argc, char* argv[])
@@ -171,6 +274,7 @@ int main(int argc, char* argv[])
     char* cmdfile, cmd[MAX_LINE_WIDTH];
     pthread_t* thread_pool;
     thread_data *tdata;
+    FILE *dispatch_f;
 
     if (argc!= 5)
     {
@@ -185,7 +289,18 @@ int main(int argc, char* argv[])
     tdata = (thread_data*)malloc(num_threads * sizeof(thread_data));
 
     init_ctr_files(num_counters);
-    init_threads(thread_pool, tdata, num_threads);
+    init_threads(thread_pool, tdata, num_threads, log_enabled);
+
+    //if log enabled open dispatcher file
+    if (log_enabled)
+        dispatch_f=fopen("dispatcher.txt", "r");
+    if(NULL!=dispatch_f)
+        fclose(dispatch_f);
+    else
+    {
+        printf("ERROR: unable to open file dispatcher.txt for reading\n");
+        exit(1);
+    }
 
     // read commands from file
     FILE *f;

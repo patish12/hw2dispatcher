@@ -10,7 +10,7 @@
                 "cmdfile.txt",
                 "5",
                 "6",
-                "1"
+                "0"
             ],
             "stopAtEntry": false,
             "cwd": "${fileDirname}",
